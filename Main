@@ -1,0 +1,396 @@
+/**
+ * Adds custom menu and handles user prompts on spreadsheet open.
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  // Open the spreadsheet only once
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const mainMenu = ui.createMenu('Progressive Activity Program'); 
+
+  // Define programs with their init and add callbacks
+  const programs = [
+    {
+      Program: ProgressiveWalkingProgram,
+      initFn: promptInitialWalkingWeeks,
+      addFn: promptAdditionalWalkingWeeks
+    },
+    {
+      Program: ProgressiveRunningProgram,
+      initFn: promptInitialRunningWeeks,
+      addFn: promptAdditionalRunningWeeks
+    }
+  ];
+
+  const sharedArgs = { ui, mainMenu, ss };
+
+  // Add submenus dynamically
+  programs.forEach(({ Program, initFn, addFn }) => {
+    addProgramSubMenu({ Program, initFn, addFn, ...sharedArgs });
+  });
+
+  mainMenu.addToUi();
+}
+
+/**
+ * Adds a submenu for a specific program.
+ * @param {object} params
+ * @param {Menu} params.mainMenu The main menu.
+ * @param {SpreadsheetApp.Spreadsheet} params.ss The spreadsheet instance.
+ * @param {typeof ProgressiveActivityProgram} params.Program The program class.
+ * @param {Function} params.initFn Callback for initializing the program.
+ * @param {Function} params.addFn Callback for adding additional weeks.
+ */
+function addProgramSubMenu({ ui, mainMenu, ss, Program, initFn, addFn }) {
+  const sheetName = Program.getSheetName();
+  const sheet = ss.getSheetByName(sheetName);
+  const subMenu = ui.createMenu(sheetName);
+
+  if (!sheet || sheet.getLastRow() < 2) {
+    subMenu.addItem('Create Program', initFn.name);
+  } else {
+    subMenu.addItem('Add Additional Weeks', addFn.name);
+  }
+
+  mainMenu.addSubMenu(subMenu);
+}
+
+/**
+ * Prompts the user for additional weeks for the Walking Program.
+ */
+function promptAdditionalWalkingWeeks() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt(
+    'Walking Program: Add Additional Weeks',
+    'Enter the number of weeks to add:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  const input = parseInt(response.getResponseText(), 10);
+  if (isNaN(input) || input <= 0) {
+    ui.alert('Please enter a valid positive integer');
+    return;
+  }
+  // Append weeks via the ProgressiveActivityProgram class
+  ProgressiveWalkingProgram.addAdditionalWeeks(input);
+}
+
+/**
+ * Prompts the user for additional weeks for the Running Program.
+ */
+function promptAdditionalRunningWeeks() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt(
+    'Running Program: Add Additional Weeks',
+    'Enter the number of weeks to add:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  const input = parseInt(response.getResponseText(), 10);
+  if (isNaN(input) || input <= 0) {
+    ui.alert('Please enter a valid positive integer');
+    return;
+  }
+  ProgressiveRunningProgram.addAdditionalWeeks(input);
+}
+
+/**
+ * Prompt to initialize Walking Program with user-specified weeks.
+ */
+function promptInitialWalkingWeeks() {
+  const ui = SpreadsheetApp.getUi();
+  const count = getPositiveIntegerResponse(ui, 'Walking Program: Create Program', 'Enter number of initial weeks:');
+  if (count) {
+    new ProgressiveWalkingProgram(SpreadsheetApp.getActiveSpreadsheet(), count).init();
+    
+    // Refresh menu to show Add option
+    onOpen();
+  }
+}
+
+/**
+ * Prompt to initialize Running Program with user-specified weeks.
+ */
+function promptInitialRunningWeeks() {
+  const ui = SpreadsheetApp.getUi();
+  const count = getPositiveIntegerResponse(ui, 'Running Program: Create Program', 'Enter number of initial weeks:');
+  if (count) {
+    new ProgressiveRunningProgram(SpreadsheetApp.getActiveSpreadsheet(), count).init();
+    // Refresh menu to show Add option
+    onOpen();
+  }
+}
+
+/**
+ * Utility to prompt user for a positive integer and validate response.
+ * @param {GoogleAppsScript.Base.Ui} ui
+ * @param {string} title
+ * @param {string} promptText
+ * @returns {number|null} The integer or null if cancelled/invalid.
+ */
+function getPositiveIntegerResponse(ui, title, promptText) {
+  const response = ui.prompt(title, promptText, ui.ButtonSet.OK_CANCEL);
+  if (response.getSelectedButton() !== ui.Button.OK) return null;
+  const value = parseInt(response.getResponseText(), 10);
+  if (isNaN(value) || value < 1) {
+    ui.alert('Please enter a valid positive integer.');
+    return null;
+  }
+  return value;
+}
+
+class ProgressiveActivityProgram {
+  /**
+   * @param {SpreadsheetApp.Spreadsheet} ss The spreadsheet instance.
+   * @param {string} sheetName Name of the spreadsheet tab
+   * @param {number} weeksCount Initial number of weeks
+   */
+  constructor(ss, sheetName, weeksCount = 12) {
+    this.sheetName = sheetName;
+    this.ss = ss;
+    this.sheet = this._loadSheet(sheetName);
+    this.headersLen = null;
+    this.weeksCount = weeksCount;
+  }
+
+  init() {
+    this._addHeaders()
+        ._addInitialWeeks()
+        ._addWeeklyEntries(0, this.weeksCount)
+        ._applyStyles();
+    
+  }
+
+  /**
+   * Static hook: append weeks dynamically
+   * @param {number} addCount
+   */
+  static addAdditionalWeeks(addCount) {
+    const sheetName = this.getSheetName();
+    const program = new this(sheetName, 0);
+    const sheet = program.sheet;
+    const lastRow = sheet.getLastRow();
+    const currentWeeks = Math.floor((lastRow - 5 + 1) / 2);
+    program._addWeeklyEntries(currentWeeks, addCount)
+           ._applyStyles();
+    return this;
+  }
+
+  /**
+   * Subclasses must override this to return their sheet tab name.
+   * @private
+   * @returns {string}
+   */
+  static getSheetName() {
+    throw new Error('getSheetName() must be implemented by subclass');
+  }
+
+  static sheet() {
+  }
+
+  /**
+   * Adds formulas to the Estimated row based on the previous three Actuals,
+   * handling empty or zero data gracefully.
+   * @param {number} weekNumber
+   * @param {number} estRow
+   */
+  _addFormulaEstimatedValues(weekNumber, estRow) {
+    const rows = this._getLastThreeWeeks(weekNumber);
+
+    const formulas = [];
+    for (let col = 3; col <= 9; col++) {
+      const colLetter = this._columnToLetter(col);
+      const [r1, r2, r3] = rows;
+      formulas.push(
+        `=IFERROR(AVERAGE(${colLetter}${r1},${colLetter}${r2},${colLetter}${r3})*1.2,"")`
+      );
+    }
+    
+    // Set formulas for Sun–Sat
+    this.sheet
+      .getRange(estRow, 3, 1, formulas.length)
+      .setFormulas([formulas]);
+
+    // Total = sum of Sun–Sat
+    this.sheet
+      .getRange(estRow, 10, 1, 1)
+      .setFormula(`=IFERROR(SUM(C${estRow}:I${estRow}),"")`);
+
+    // 2) Total = sum of Sun–Sat in the Estimated row
+    this.sheet
+      .getRange(estRow, 10)
+      .setFormula(`=IFERROR(SUM(C${estRow}:I${estRow}), "")`);
+  }
+
+  /**
+   * @private
+   */
+  _addHeaders() {
+    const headers = [ 'Week', 'Sun', 'Mon', 'Tues', 'Wed', 'Thurs', 'Fri', 'Sat', 'Total' ];
+    this.headersLen = headers.length;
+    this.sheet
+      .getRange(1, 2, 1, headers.length)
+      .setValues([headers])
+      .setFontWeight('bold')
+      .setVerticalAlignment('middle')
+      .setHorizontalAlignment('center');
+
+    return this;
+  }
+
+  /**
+   * Populates rows 2–4 in column B with weeks -3, -2, -1, adds Total formulas, and applies a border.
+   */
+  _addInitialWeeks() {
+    const startRow = 2;
+    const rowCount = 3;
+    // Set week numbers in column B
+    const weekLabels = [[-3], [-2], [-1]];
+    this.sheet.getRange(startRow, 2, rowCount, 1).setValues(weekLabels);
+    
+    // Set Total formulas in column J
+    const totalFormulas = weekLabels.map((_, i) => [
+      `=IFERROR(SUM(C${startRow + i}:I${startRow + i}),"")`
+    ]);
+
+    this.sheet.getRange(startRow, 10, rowCount, 1).setFormulas(totalFormulas);
+
+    // Apply border around initial weeks group (columns A–J)
+    this.sheet
+      .getRange(startRow, 1, rowCount, 10)
+      .setBorder(true, true, true, true, false, false, null, SpreadsheetApp.BorderStyle.SOLID);
+
+    return this;
+  }
+
+  /** @private Adds a block of Estimated/Actual weeks */
+  _addWeeklyEntries(startWeek, count) {
+    for (let i=0; i<count; i++) {
+      this._addWeekEntry(startWeek+i);
+    }
+    return this;
+  }
+
+  /**
+   * Adds the Estimated and Actual rows for a single week and applies borders.
+   * @param {number} weekNumber
+   * @private
+   */
+  _addWeekEntry(weekNumber) {
+    const estRow = 5 + 2 * weekNumber;
+    const actRow = estRow + 1;
+
+    const values = [
+      ['Estimated', weekNumber],
+      ['Actual', weekNumber]
+    ];
+
+    // Batch set Type and Week in columns A–B
+    this.sheet.getRange(estRow, 1, 2, 2).setValues(values);
+
+    // Populate the Estimated formulas + its Total
+    this._addFormulaEstimatedValues(weekNumber, estRow);
+
+    // Add Total formula for the Actual row (columns C–I)
+    this.sheet
+      .getRange(actRow, 10)
+      .setFormula(`=IFERROR(SUM(C${actRow}:I${actRow}), "")`);
+
+    // Apply border around the two-row group (columns A–J)
+    this.sheet
+      .getRange(estRow, 1, 2, 10)
+      .setBorder(true, true, true, true, false, false, null, SpreadsheetApp.BorderStyle.SOLID);
+  }
+
+  /**
+   * Applies alignment and vertical centering to all populated cells.
+   * @private
+   */
+  _applyStyles() {
+    const lastRow = this.sheet.getLastRow();
+    const lastCol = 10; // Columns A (1) through J (10)
+    this.sheet
+      .getRange(1, 1, lastRow, lastCol)
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle');
+    return this;
+  }
+
+  /**
+   * @private
+   * Converts a 1-based column index to its letter(s).
+   * @param {number} col
+   * @returns {string}
+   */
+  _columnToLetter(col) {
+    let letter = '';
+    let n = col;
+    while (n > 0) {
+      const mod = (n - 1) % 26;
+      letter = String.fromCharCode(65 + mod) + letter;
+      n = Math.floor((n - 1) / 26);
+    }
+    return letter;
+  }
+
+  /**
+   * @private
+   * @param {number} k Week number
+   * @returns {number} The row index where that week’s “Actual” data lives.
+   *
+   * Negative weeks (–3, –2, –1) are in rows 2–4 (k + 5).
+   * Non-negative weeks start at row 6 and then add two rows per week: 6 + 2*k.
+   */
+  _getActualRow(k) {
+    return k < 0
+      ? k + 5      // –3→2, –2→3, –1→4
+      : 6 + 2 * k; //  0→6,  1→8,  2→10, …
+  }
+
+  /**
+   * @private
+   * @param {number} currentWeek
+   * @returns {number[]} Row indices of the previous three Actual entries.
+   */
+  _getLastThreeWeeks(currentWeek) {
+    const lastWeeks = [currentWeek - 1, currentWeek - 2, currentWeek - 3];
+    return lastWeeks.map(k => this._getActualRow(k));
+  }
+
+  /**
+   * @private
+   */
+  _loadSheet(sheetName) {
+    const sheet = this.ss.getSheetByName(sheetName);
+    return sheet ?? this.ss.insertSheet(sheetName);
+  }
+}
+
+class ProgressiveWalkingProgram extends ProgressiveActivityProgram {
+  constructor(ss, weeksCount = 12) {
+    const sheetName = 'Walking Program';
+    super(ss, sheetName, weeksCount);
+  }
+
+  /**
+   * @override
+   * @private
+   */
+  static getSheetName() {
+    return 'Walking Program';
+  }
+}
+
+class ProgressiveRunningProgram extends ProgressiveActivityProgram {
+  constructor(ss, weeksCount = 12) {
+    const sheetName = 'Running Program';
+    super(ss, sheetName, weeksCount);
+  }
+
+  /**
+   * @override
+   * @private      
+   */
+  static getSheetName() {
+    return 'Running Program';
+  }
+}
